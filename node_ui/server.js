@@ -1,4 +1,3 @@
-// ---------------- IMPORTS ----------------
 const express = require("express");
 const multer = require("multer");
 const net = require("net");
@@ -11,13 +10,8 @@ const db = require("./auth");
 const app = express();
 const PORT = 8000;
 
-// ---------------- MIDDLEWARES ----------------
-// ---------------- MIDDLEWARES ----------------
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json()); // <-- Add this for JSON requests
-
-// Temporary user storage (replace with DB later)
-const users = [];
+app.use(express.json());
 
 app.use(
   session({
@@ -27,18 +21,14 @@ app.use(
   })
 );
 
-// Multer setup for file uploads
 const upload = multer({ dest: "uploads/" });
 
-// Python server config
 const PYTHON_HOST = "127.0.0.1";
 const PYTHON_PORT = 5000;
 
-// Set EJS as template engine
 app.set("view engine", "ejs");
 app.use(express.static("public"));
 
-// Middleware to check login
 function requireLogin(req, res, next) {
   if (!req.session.user) {
     return res.redirect("/login");
@@ -46,9 +36,6 @@ function requireLogin(req, res, next) {
   next();
 }
 
-// ---------------- ROUTES ----------------
-
-// 🏠 Home Page
 app.get("/", (req, res) => {
   if (!req.session.user) {
     return res.redirect("/login");
@@ -56,60 +43,59 @@ app.get("/", (req, res) => {
   res.render("home", { user: req.session.user });
 });
 
-// ---------------- AUTHENTICATION ----------------
+app.get("/register", (req, res) => res.render("register"));
 
-// Register Page
-app.get("/register", (req, res) => {
-  res.render("register");
-});
-
-app.post("/register", (req, res) => {
+app.post("/register", async (req, res) => {
   const { username, password } = req.body;
 
-  // Example simple in-memory storage (replace with database in future)
-  const existingUser = users.find(u => u.username === username);
+  if (!username || !password)
+    return res.json({ success: false, message: "Username and password required" });
 
-  if (existingUser) {
-    return res.json({ success: false, message: "Username already exists!" });
-  }
+  const hashedPassword = await bcrypt.hash(password, 10);
 
-  users.push({ username, password });
-  return res.json({ success: true, message: "Registration successful!" });
+  const query = "INSERT INTO users (username, password) VALUES (?, ?)";
+  db.run(query, [username, hashedPassword], function (err) {
+    if (err) {
+      return res.json({ success: false, message: "Username already exists!" });
+    }
+    return res.json({ success: true, message: "Registration successful!" });
+  });
 });
 
-
-// Login Page
-app.get("/login", (req, res) => {
-  res.render("login");
-});
+app.get("/login", (req, res) => res.render("login"));
 
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
-  const user = users.find(u => u.username === username && u.password === password);
 
-  if (user) {
-    req.session.user = user;
+  const query = "SELECT * FROM users WHERE username = ?";
+  db.get(query, [username], async (err, user) => {
+    if (err) return res.json({ success: false, message: "Error during login" });
+    if (!user) return res.json({ success: false, message: "Invalid username or password" });
+
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.json({ success: false, message: "Invalid username or password" });
+
+    req.session.user = { id: user.id, username: user.username };
     return res.json({ success: true, message: "Login successful" });
-  } else {
-    return res.json({ success: false, message: "Invalid username or password" });
-  }
+  });
 });
 
-
-// Logout
 app.get("/logout", (req, res) => {
   req.session.destroy();
   res.redirect("/login");
 });
 
-// ---------------- FILE HANDLING ----------------
+app.get("/all-users", (req, res) => {
+  db.all("SELECT id, username FROM users", [], (err, rows) => {
+    if (err) return res.json({ success: false, message: "Error fetching users" });
+    res.json({ success: true, users: rows });
+  });
+});
 
-// Upload Page
 app.get("/upload", requireLogin, (req, res) => {
   res.render("upload");
 });
 
-// Handle Upload POST
 app.post("/upload", requireLogin, upload.single("file"), (req, res) => {
   const filename = req.file.originalname;
   const filepath = req.file.path;
@@ -139,17 +125,16 @@ app.post("/upload", requireLogin, upload.single("file"), (req, res) => {
 
   client.on("error", (err) => {
     console.error("Error uploading file:", err);
-    res.send("❌ Upload failed.");
+    res.send("Upload failed.");
   });
 
   client.on("timeout", () => {
     console.error("Upload timeout");
-    res.send("❌ Upload timed out.");
+    res.send("Upload timed out.");
     client.destroy();
   });
 });
 
-// List Files
 app.get("/files", requireLogin, (req, res) => {
   const client = new net.Socket();
   client.setTimeout(5000);
@@ -170,23 +155,22 @@ app.get("/files", requireLogin, (req, res) => {
       res.render("files", { files });
     } catch (err) {
       console.error("Failed to parse file list:", err);
-      res.send("❌ Failed to fetch files.");
+      res.send("Failed to fetch files.");
     }
   });
 
   client.on("error", (err) => {
     console.error("Error fetching file list:", err);
-    res.send("❌ Failed to fetch files.");
+    res.send("Failed to fetch files.");
   });
 
   client.on("timeout", () => {
     console.error("List request timeout");
-    res.send("❌ Request timed out.");
+    res.send("Request timed out.");
     client.destroy();
   });
 });
 
-// Download File
 app.get("/download/:filename", requireLogin, (req, res) => {
   const filename = req.params.filename;
   const client = new net.Socket();
@@ -207,7 +191,7 @@ app.get("/download/:filename", requireLogin, (req, res) => {
         client.write("ACK");
         fileTransferStarted = true;
       } else if (message.startsWith("FILE_NOT_FOUND")) {
-        res.send("❌ File not found on server.");
+        res.send("File not found on server.");
         client.destroy();
       }
     } else {
@@ -228,17 +212,16 @@ app.get("/download/:filename", requireLogin, (req, res) => {
 
   client.on("error", (err) => {
     console.error("Error downloading file:", err);
-    res.send("❌ Download failed.");
+    res.send("Download failed.");
   });
 
   client.on("timeout", () => {
     console.error("Download timeout");
-    res.send("❌ Download timed out.");
+    res.send("Download timed out.");
     client.destroy();
   });
 });
 
-// Delete File
 app.post("/delete/:filename", requireLogin, (req, res) => {
   const filename = req.params.filename;
   const client = new net.Socket();
@@ -255,24 +238,23 @@ app.post("/delete/:filename", requireLogin, (req, res) => {
       console.log(`Deleted file: ${filename}`);
       res.redirect("/files");
     } else if (message === "FILE_NOT_FOUND") {
-      res.send("❌ File not found on server.");
+      res.send("File not found on server.");
     }
     client.end();
   });
 
   client.on("error", (err) => {
     console.error("Error deleting file:", err);
-    res.send("❌ Delete failed.");
+    res.send("Delete failed.");
   });
 
   client.on("timeout", () => {
     console.error("Delete timeout");
-    res.send("❌ Delete timed out.");
+    res.send("Delete timed out.");
     client.destroy();
   });
 });
 
-// ---------------- START SERVER ----------------
 app.listen(PORT, () => {
   console.log(`🚀 NetStore UI running at http://localhost:${PORT}`);
 });
